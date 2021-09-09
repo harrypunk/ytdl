@@ -1,16 +1,3 @@
-#![cfg_attr(feature = "clippy", feature(plugin))]
-#![cfg_attr(feature = "clippy", plugin(clippy))]
-
-extern crate clap;
-extern crate env_logger;
-#[macro_use]
-extern crate log;
-extern crate openssl_probe;
-extern crate pbr;
-extern crate reqwest;
-extern crate serde_json;
-extern crate ytdl;
-
 use clap::{App, AppSettings, Arg};
 use pbr::{ProgressBar, Units};
 use reqwest::header::{ContentLength, Headers, Range};
@@ -37,8 +24,7 @@ struct Options {
 }
 
 fn main() {
-    openssl_probe::init_ssl_cert_env_vars();
-    drop(env_logger::init());
+    env_logger::init();
 
     let flags = vec![
         Arg::with_name("output")

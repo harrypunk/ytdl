@@ -1,12 +1,12 @@
-use env_variables;
-use errors::*;
 use format::Format;
-use reqwest::{self as request, Client, StatusCode};
+use reqwest::{self, Client, StatusCode};
 use std::collections::HashMap;
-use std::io::Read;
+use std::error::Error;
+use serde::{Serialize, Deserialize};
 
 use url::percent_encoding::percent_decode;
 use url::{form_urlencoded, Url};
+use simple_error::SimpleError;
 
 const YOUTUBE_VIDEO_INFO_URL: &str = "https://www.youtube.com/get_video_info";
 
@@ -21,12 +21,8 @@ pub struct VideoInfo {
     pub duration: i32,
 }
 
-pub fn get_download_url(f: &Format) -> Result<Url> {
-    let url_str = if let Some(u) = f.meta.get("url") {
-        u.as_str()
-    } else {
-        bail!("couldn't extract url from format")
-    };
+pub fn get_download_url(f: &Format) -> Result<Url, Box<dyn Error>> {
+    let url_str = f.meta.get("url")?.as_str();
 
     let url_str = percent_decode(url_str.as_bytes())
         .decode_utf8()?
@@ -44,7 +40,7 @@ pub fn get_filename(i: &VideoInfo, f: &Format) -> String {
     format!("{} {}.{}", title, f.resolution, f.extension)
 }
 
-pub fn get_video_info(value: &str) -> Result<VideoInfo> {
+pub fn get_video_info(value: &str) -> Result<VideoInfo, Box<dyn Error>> {
     let parse_url = match Url::parse(value) {
         Ok(u) => u,
         Err(_) => {
@@ -59,35 +55,35 @@ pub fn get_video_info(value: &str) -> Result<VideoInfo> {
     get_video_info_from_url(&parse_url)
 }
 
-fn get_video_info_from_url(u: &Url) -> Result<VideoInfo> {
+fn get_video_info_from_url(u: &Url) -> Result<VideoInfo, Box<dyn Error>> {
     if let Some(video_id) = u
         .query_pairs()
         .into_owned()
         .collect::<HashMap<String, String>>()
         .get("v")
     {
-        return get_video_info_from_html(video_id);
+        return get_video_info_from_html(video_id)
     }
-    bail!("invalid youtube url, no video id");
+    SimpleError::new("invalid youtube url, no video id")
 }
 
-fn get_video_info_from_short_url(u: &Url) -> Result<VideoInfo> {
+fn get_video_info_from_short_url(u: &Url) -> Result<VideoInfo, Box<dyn Error>> {
     let path = u.path().trim_start_matches("/");
     if path.len() > 0 {
         return get_video_info_from_html(path);
     }
 
-    bail!("could not parse short URL");
+    
 }
 
-fn get_video_info_from_html(id: &str) -> Result<VideoInfo> {
+fn get_video_info_from_html(id: &str) -> Result<VideoInfo, Box<dyn Error>> {
     let info_url = format!("{}?video_id={}", YOUTUBE_VIDEO_INFO_URL, id);
-    debug!("{}", info_url);
+    log::debug!("{}", info_url);
     let mut resp = get_client(info_url.as_str())?
         .get(info_url.as_str())?
         .send()?;
     if resp.status() != StatusCode::Ok {
-        bail!("video info response invalid status code");
+        Err("video info response invalid status code");
     }
 
     let mut info = String::new();
@@ -97,7 +93,7 @@ fn get_video_info_from_html(id: &str) -> Result<VideoInfo> {
     match info.get("status") {
         Some(s) => {
             if s == "fail" {
-                bail!(format!(
+                (format!(
                     "Error {}:{}",
                     info.get("errorcode")
                         .map(|s| s.as_str())
@@ -114,25 +110,25 @@ fn get_video_info_from_html(id: &str) -> Result<VideoInfo> {
     if let Some(title) = info.get("title") {
         video_info.title = title.to_string();
     } else {
-        debug!("unable to extract title");
+        log::debug!("unable to extract title");
     }
 
     if let Some(author) = info.get("author") {
         video_info.author = author.to_string();
     } else {
-        debug!("unable to extract author");
+        log::debug!("unable to extract author");
     }
 
     if let Some(length) = info.get("length_seconds") {
         video_info.duration = length.parse::<i32>().unwrap_or_default();
     } else {
-        debug!("unable to parse duration string");
+        log::debug!("unable to parse duration string");
     }
 
     if let Some(keywords) = info.get("keywords") {
         video_info.keywords = keywords.split(",").map(|s| s.to_string()).collect();
     } else {
-        debug!("unable to extract keywords")
+        log::debug!("unable to extract keywords")
     }
 
     let mut format_strings = vec![];
@@ -171,7 +167,7 @@ fn get_video_info_from_html(id: &str) -> Result<VideoInfo> {
 
                 formats.push(f);
             } else {
-                debug!("no metadata found for itag: {}, skipping...", itag)
+                log::debug!("no metadata found for itag: {}, skipping...", itag)
             }
         }
     }
@@ -187,13 +183,12 @@ fn parse_query(query_str: String) -> HashMap<String, String> {
         .collect::<HashMap<String, String>>();
 }
 
-pub fn get_client(s: &str) -> Result<Client> {
-    let client = if let Some(u) = env_variables::for_url(s) {
-        request::Client::builder()?
-            .proxy(request::Proxy::all(u.as_str())?)
-            .build()?
-    } else {
-        request::Client::new()?
-    };
-    Ok(client)
+pub fn get_client(s: &str) -> Result<Client, Box<dyn std::error::Error>> {
+    let https_proxy = std::env::var("https_proxy");
+    match https_proxy {
+        Ok(s) => reqwest::Client::builder()?
+            .proxy(reqwest::Proxy::all(s.as_str())?)
+            .build()?,
+        Err(_) => reqwest::Client::new()?
+    }
 }
